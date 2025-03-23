@@ -197,6 +197,58 @@ def journal_entry(cmdr, is_beta, system, station, entry, state):
         elif entry['event'] == 'SettlementApproached':
             presence_details = _('At {settlement}').format(settlement=entry['Name'])
 
+                if entry['event'] == 'StartUp':
+            presence_state = _('In system {system}').format(system=system)
+            presence_details = _('Docked at {station}').format(station=station) if station else _('Flying in normal space')
+
+        elif entry['event'] == 'Location':
+            presence_state = _('In system {system}').format(system=system)
+            presence_details = _('Docked at {station}').format(station=station) if station else _('Flying in normal space')
+
+        # Add Fleet Carrier handlers
+        elif entry['event'] == 'Docked':
+            if entry.get('StationType') == 'FleetCarrier':
+                presence_details = _('Docked at Fleet Carrier {station}').format(station=station)
+            else:
+                presence_details = _('Docked at {station}').format(station=station)
+            presence_state = _('In system {system}').format(system=system)
+
+        elif entry['event'] == 'CarrierJumpRequest':
+            presence_state = _('Fleet Carrier preparing jump')
+            presence_details = _('To {system}').format(system=entry['SystemName'])
+
+        elif entry['event'] == 'CarrierJumpCancelled':
+            presence_state = _('In system {system}').format(system=system)
+            presence_details = _('Docked at Fleet Carrier')
+
+        elif entry['event'] == 'CarrierJump':
+            presence_state = _('In system {system}').format(system=entry['StarSystem'])
+            presence_details = _('Fleet Carrier arrived')
+
+        elif entry['event'] == 'Undocked':
+            if entry.get('StationType') == 'FleetCarrier':
+                presence_details = _('Flying near Fleet Carrier')
+            else:
+                presence_details = _('Flying in normal space')
+            presence_state = _('In system {system}').format(system=system)
+
+        elif entry['event'] == 'CarrierStats':
+            presence_details = _('Managing Fleet Carrier')
+            if entry.get('CrewCount', 0) > 0:
+                presence_details += f" ({entry['CrewCount']} crew)"
+
+        elif entry['event'] == 'CarrierBankTransfer':
+            presence_details = _('Managing Fleet Carrier finances')
+
+        elif entry['event'] == 'CarrierDecommission':
+            presence_details = _('Decommissioning Fleet Carrier')
+            presence_state = _('In system {system}').format(system=system)
+
+        if presence_state != this.presence_state or presence_details != this.presence_details:
+            this.presence_state = presence_state
+            this.presence_details = presence_details
+            update_presence()
+       
         if presence_state != this.presence_state or presence_details != this.presence_details:
             this.presence_state = presence_state
             this.presence_details = presence_details
