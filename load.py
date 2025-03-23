@@ -5,7 +5,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-# http: //www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,7 +35,7 @@ logger = logging.getLogger(f'{appname}.{plugin_name}')
 _ = functools.partial(l10n.Translations.translate, context=__file__)
 
 CLIENT_ID = 386149818227097610
-VERSION = '3.2.0'
+VERSION = '3.2.0'  # Updated version
 
 # Global state variables
 planet = '<Hidden>'
@@ -128,11 +128,17 @@ def journal_entry(cmdr, is_beta, system, station, entry, state):
 
         elif entry['event'] == 'Docked':
             presence_state = _('In system {system}').format(system=system)
-            presence_details = _('Docked at {station}').format(station=station)
+            if entry.get('StationType') == 'FleetCarrier':
+                presence_details = _('Docked at Fleet Carrier {station}').format(station=station)
+            else:
+                presence_details = _('Docked at {station}').format(station=station)
 
         elif entry['event'] == 'Undocked':
             presence_state = _('In system {system}').format(system=system)
-            presence_details = _('Flying in normal space')
+            if entry.get('StationType') == 'FleetCarrier':
+                presence_details = _('Flying near Fleet Carrier')
+            else:
+                presence_details = _('Flying in normal space')
 
         elif entry['event'] == 'ShutDown':
             presence_state = _('Connecting CMDR Interface')
@@ -197,22 +203,7 @@ def journal_entry(cmdr, is_beta, system, station, entry, state):
         elif entry['event'] == 'SettlementApproached':
             presence_details = _('At {settlement}').format(settlement=entry['Name'])
 
-                if entry['event'] == 'StartUp':
-            presence_state = _('In system {system}').format(system=system)
-            presence_details = _('Docked at {station}').format(station=station) if station else _('Flying in normal space')
-
-        elif entry['event'] == 'Location':
-            presence_state = _('In system {system}').format(system=system)
-            presence_details = _('Docked at {station}').format(station=station) if station else _('Flying in normal space')
-
-        # Add Fleet Carrier handlers
-        elif entry['event'] == 'Docked':
-            if entry.get('StationType') == 'FleetCarrier':
-                presence_details = _('Docked at Fleet Carrier {station}').format(station=station)
-            else:
-                presence_details = _('Docked at {station}').format(station=station)
-            presence_state = _('In system {system}').format(system=system)
-
+        # Fleet Carrier Events
         elif entry['event'] == 'CarrierJumpRequest':
             presence_state = _('Fleet Carrier preparing jump')
             presence_details = _('To {system}').format(system=entry['SystemName'])
@@ -224,13 +215,6 @@ def journal_entry(cmdr, is_beta, system, station, entry, state):
         elif entry['event'] == 'CarrierJump':
             presence_state = _('In system {system}').format(system=entry['StarSystem'])
             presence_details = _('Fleet Carrier arrived')
-
-        elif entry['event'] == 'Undocked':
-            if entry.get('StationType') == 'FleetCarrier':
-                presence_details = _('Flying near Fleet Carrier')
-            else:
-                presence_details = _('Flying in normal space')
-            presence_state = _('In system {system}').format(system=system)
 
         elif entry['event'] == 'CarrierStats':
             presence_details = _('Managing Fleet Carrier')
@@ -244,11 +228,7 @@ def journal_entry(cmdr, is_beta, system, station, entry, state):
             presence_details = _('Decommissioning Fleet Carrier')
             presence_state = _('In system {system}').format(system=system)
 
-        if presence_state != this.presence_state or presence_details != this.presence_details:
-            this.presence_state = presence_state
-            this.presence_details = presence_details
-            update_presence()
-       
+        # Single update check at end
         if presence_state != this.presence_state or presence_details != this.presence_details:
             this.presence_state = presence_state
             this.presence_details = presence_details
@@ -294,7 +274,7 @@ def run_callbacks():
             initialize_discord()
             break
 
-# CQC handling (remains from original)
+# CQC handling
 def journal_entry_cqc(cmdr, is_beta, entry, state):
     maps = {
         'Bleae Aewsy GA-Y d1-14': 'Asteria Point',
@@ -321,10 +301,5 @@ def journal_entry_cqc(cmdr, is_beta, entry, state):
             this.presence_details = presence_details
             update_presence()
 
-def run_callbacks():
-    try:
-        while True:
-            time.sleep(1 / 10)
-            this.app.run_callbacks()
-    except Exception:
-        check_run(this.plugin_dir)
+    except Exception as e:
+        logger.error(f"Error handling CQC entry: {e}", exc_info=True)
