@@ -27,7 +27,6 @@ import time
 import l10n
 import myNotebook as nb
 from config import config, appname, appversion
-import compat
 from py_discord_sdk import discordsdk as dsdk
 
 plugin_name = "DiscordPresence"
@@ -38,7 +37,7 @@ _ = functools.partial(l10n.Translations.translate, context=__file__)
 
 CLIENT_ID = 386149818227097610
 
-VERSION = '3.2.0'
+VERSION = '3.1.0'
 
 # Add global var for Planet name (landing + around)
 planet = '<Hidden>'
@@ -59,20 +58,45 @@ def callback(result):
 
 
 def update_presence():
-    if config.get_int("disable_presence") == 0:
-        this.activity.state = this.presence_state
-        this.activity.details = this.presence_details
-        this.activity.timestamps.start = int(this.time_start)
-        this.activity_manager.update_activity(this.activity, callback)
+    if isinstance(appversion, str):
+        core_version = semantic_version.Version(appversion)
+
+    elif callable(appversion):
+        core_version = appversion()
+
+    logger.info(f'Core EDMC version: {core_version}')
+    if core_version < semantic_version.Version('5.0.0-beta1'):
+        logger.info('EDMC core version is before 5.0.0-beta1')
+        if config.getint("disable_presence") == 0:
+            this.activity.state = this.presence_state
+            this.activity.details = this.presence_details
     else:
-        this.activity_manager.clear_activity(callback)
+        logger.info('EDMC core version is at least 5.0.0-beta1')
+        if config.get_int("disable_presence") == 0:
+            this.activity.state = this.presence_state
+            this.activity.details = this.presence_details
+
+    this.activity.timestamps.start = int(this.time_start)
+    this.activity_manager.update_activity(this.activity, callback)
 
 
 def plugin_prefs(parent, cmdr, is_beta):
     """
     Return a TK Frame for adding to the EDMC settings dialog.
     """
-    this.disablePresence = tk.IntVar(value=config.get_int("disable_presence"))
+    if isinstance(appversion, str):
+        core_version = semantic_version.Version(appversion)
+
+    elif callable(appversion):
+        core_version = appversion()
+
+    logger.info(f'Core EDMC version: {core_version}')
+    if core_version < semantic_version.Version('5.0.0-beta1'):
+        logger.info('EDMC core version is before 5.0.0-beta1')
+        this.disablePresence = tk.IntVar(value=config.getint("disable_presence"))
+    else:
+        logger.info('EDMC core version is at least 5.0.0-beta1')
+        this.disablePresence = tk.IntVar(value=config.get_int("disable_presence"))
 
     frame = nb.Frame(parent)
     nb.Checkbutton(frame, text="Disable Presence", variable=this.disablePresence).grid()
@@ -202,6 +226,57 @@ def check_run(plugin_dir):
     this.disablePresence = None
 
     update_presence()
+
+
+def journal_entry_cqc(cmdr, is_beta, entry, state):
+
+    maps = {
+        'Bleae Aewsy GA-Y d1-14': 'Asteria Point',
+        'Eta Cephei': 'Cluster Compound',
+        'Theta Ursae Majoris': 'Elevate',
+        'Boepp SU-E d12-818': 'Ice Field',
+            }  # dict to convert star systems to CQC maps names
+
+    presence_state = this.presence_state
+    presence_details = this.presence_details
+
+    if state['Horizons']:
+        game_version = 'in Horizons'
+
+    elif state['Odyssey']:
+        game_version = 'in Odyssey'
+
+    elif not state['Horizons'] and not state['Odyssey']:
+        game_version = 'in Arena standalone'  # or in pre horizons elite but who play it now
+
+    else:
+        game_version = ''  # shouldn't happen
+
+    if entry['event'] == ['LoadGame', 'StartUp'] or entry.get('MusicTrack') == 'CQCMenu':
+        presence_state = f'Playing CQC {game_version}'
+        presence_details = 'In lobby/queue'
+
+    if entry['event'] == 'Music' and entry.get('MusicTrack') == 'MainMenu' or entry['event'].lower() == 'shutdown':
+        presence_state = _('Connecting CMDR Interface')
+        presence_details = ''
+
+    if entry['event'] == 'Location' and entry.get('StarSystem'):
+        presence_details = maps.get(entry['StarSystem'], '')
+        presence_state = f'Playing CQC {game_version}'
+
+    if entry['event'] == 'StartUp':
+        if entry.get('StarSystem') is None:
+            presence_state = _('Connecting CMDR Interface')
+            presence_details = ''
+
+        else:
+            presence_details = maps.get(entry['StarSystem'], '')
+            presence_state = f'Playing CQC {game_version}'
+
+    if presence_state != this.presence_state or presence_details != this.presence_details:
+        this.presence_state = presence_state
+        this.presence_details = presence_details
+        update_presence()
 
 
 def run_callbacks():
