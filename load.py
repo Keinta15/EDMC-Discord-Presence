@@ -19,7 +19,6 @@ import logging
 import threading
 import tkinter as tk
 from os.path import dirname, join
-
 import semantic_version
 import sys
 import time
@@ -36,248 +35,239 @@ logger = logging.getLogger(f'{appname}.{plugin_name}')
 _ = functools.partial(l10n.Translations.translate, context=__file__)
 
 CLIENT_ID = 386149818227097610
+VERSION = '3.2.0'
 
-VERSION = '3.1.0'
-
-# Add global var for Planet name (landing + around)
+# Global state variables
 planet = '<Hidden>'
 landingPad = '2'
-
-this = sys.modules[__name__]  # For holding module globals
-
+this = sys.modules[__name__]
 
 def callback(result):
-    logger.info(f'Callback: {result}')
+    """Handle Discord SDK callbacks"""
     if result == dsdk.Result.ok:
-        logger.info("Successfully set the activity!")
-    elif result == dsdk.Result.transaction_aborted:
-        logger.warning(f'Transaction aborted due to SDK shutting down: {result}')
+        logger.debug("Activity update successful")
     else:
-        logger.error(f'Error in callback: {result}')
-        raise Exception(result)
-
+        logger.error(f'Discord error: {result.name}')
 
 def update_presence():
-    if isinstance(appversion, str):
-        core_version = semantic_version.Version(appversion)
+    """Update the Discord presence with current state"""
+    try:
+        core_version = semantic_version.Version(appversion() if callable(appversion) else appversion)
+        disabled = (config.getint if core_version < semantic_version.Version('5.0.0-beta1') else config.get_int)("disable_presence")
+    except Exception as e:
+        logger.error(f"Version check failed: {e}")
+        disabled = 0
 
-    elif callable(appversion):
-        core_version = appversion()
-
-    logger.info(f'Core EDMC version: {core_version}')
-    if core_version < semantic_version.Version('5.0.0-beta1'):
-        logger.info('EDMC core version is before 5.0.0-beta1')
-        if config.getint("disable_presence") == 0:
-            this.activity.state = this.presence_state
-            this.activity.details = this.presence_details
-    else:
-        logger.info('EDMC core version is at least 5.0.0-beta1')
-        if config.get_int("disable_presence") == 0:
-            this.activity.state = this.presence_state
-            this.activity.details = this.presence_details
-
-    this.activity.timestamps.start = int(this.time_start)
-    this.activity_manager.update_activity(this.activity, callback)
-
+    if not disabled:
+        this.activity.state = this.presence_state
+        this.activity.details = this.presence_details
+        this.activity.timestamps.start = int(this.time_start)
+        this.activity.assets.large_image = 'elite_logo'
+        this.activity_manager.update_activity(this.activity, callback)
 
 def plugin_prefs(parent, cmdr, is_beta):
-    """
-    Return a TK Frame for adding to the EDMC settings dialog.
-    """
-    if isinstance(appversion, str):
-        core_version = semantic_version.Version(appversion)
-
-    elif callable(appversion):
-        core_version = appversion()
-
-    logger.info(f'Core EDMC version: {core_version}')
-    if core_version < semantic_version.Version('5.0.0-beta1'):
-        logger.info('EDMC core version is before 5.0.0-beta1')
-        this.disablePresence = tk.IntVar(value=config.getint("disable_presence"))
-    else:
-        logger.info('EDMC core version is at least 5.0.0-beta1')
-        this.disablePresence = tk.IntVar(value=config.get_int("disable_presence"))
-
+    """Create preferences UI"""
     frame = nb.Frame(parent)
+    this.disablePresence = tk.IntVar(value=config.getint("disable_presence"))
     nb.Checkbutton(frame, text="Disable Presence", variable=this.disablePresence).grid()
-    nb.Label(frame, text='Version %s' % VERSION).grid(padx=10, pady=10, sticky=tk.W)
-
+    nb.Label(frame, text=f'Version {VERSION}').grid(padx=10, pady=10, sticky=tk.W)
     return frame
 
-
 def prefs_changed(cmdr, is_beta):
-    """
-    Save settings.
-    """
+    """Save preferences"""
     config.set('disable_presence', this.disablePresence.get())
     update_presence()
 
-
 def plugin_start3(plugin_dir):
+    """Initialize plugin"""
     this.plugin_dir = plugin_dir
-    this.discord_thread = threading.Thread(target=check_run, args=(plugin_dir,))
-    this.discord_thread.setDaemon(True)
+    this.discord_thread = threading.Thread(target=initialize_discord, daemon=True)
     this.discord_thread.start()
-    return 'DiscordPresence'
-
+    return plugin_name
 
 def plugin_stop():
-    this.activity_manager.clear_activity(callback)
-    this.call_back_thread = None
-
+    """Clean up on plugin stop"""
+    if hasattr(this, 'activity_manager'):
+        this.activity_manager.clear_activity(callback)
+    this.running = False
 
 def journal_entry(cmdr, is_beta, system, station, entry, state):
-    global planet
-    global landingPad
+    """Handle journal events"""
+    global planet, landingPad
+
     presence_state = this.presence_state
     presence_details = this.presence_details
-    if entry['event'] == 'StartUp':
-        presence_state = _('In system {system}').format(system=system)
-        if station is None:
+
+    try:
+        if entry['event'] == 'StartUp':
+            presence_state = _('In system {system}').format(system=system)
+            presence_details = _('Docked at {station}').format(station=station) if station else _('Flying in normal space')
+
+        elif entry['event'] == 'Location':
+            presence_state = _('In system {system}').format(system=system)
+            presence_details = _('Docked at {station}').format(station=station) if station else _('Flying in normal space')
+
+        elif entry['event'] == 'StartJump':
+            presence_state = _('Jumping')
+            if entry['JumpType'] == 'Hyperspace':
+                presence_details = _('Jumping to system {system}').format(system=entry['StarSystem'])
+            else:
+                presence_details = _('Preparing for supercruise')
+
+        elif entry['event'] == 'SupercruiseEntry':
+            presence_state = _('In system {system}').format(system=system)
+            presence_details = _('Supercruising')
+
+        elif entry['event'] == 'SupercruiseExit':
+            presence_state = _('In system {system}').format(system=system)
             presence_details = _('Flying in normal space')
-        else:
+
+        elif entry['event'] == 'FSDJump':
+            presence_state = _('In system {system}').format(system=system)
+            presence_details = _('Supercruising')
+
+        elif entry['event'] == 'Docked':
+            presence_state = _('In system {system}').format(system=system)
             presence_details = _('Docked at {station}').format(station=station)
-    elif entry['event'] == 'Location':
-        presence_state = _('In system {system}').format(system=system)
-        if station is None:
+
+        elif entry['event'] == 'Undocked':
+            presence_state = _('In system {system}').format(system=system)
             presence_details = _('Flying in normal space')
-        else:
-            presence_details = _('Docked at {station}').format(station=station)
-    elif entry['event'] == 'StartJump':
-        presence_state = _('Jumping')
-        if entry['JumpType'] == 'Hyperspace':
-            presence_details = _('Jumping to system {system}').format(system=entry['StarSystem'])
-        elif entry['JumpType'] == 'Supercruise':
-            presence_details = _('Preparing for supercruise')
-    elif entry['event'] == 'SupercruiseEntry':
-        presence_state = _('In system {system}').format(system=system)
-        presence_details = _('Supercruising')
-    elif entry['event'] == 'SupercruiseExit':
-        presence_state = _('In system {system}').format(system=system)
-        presence_details = _('Flying in normal space')
-    elif entry['event'] == 'FSDJump':
-        presence_state = _('In system {system}').format(system=system)
-        presence_details = _('Supercruising')
-    elif entry['event'] == 'Docked':
-        presence_state = _('In system {system}').format(system=system)
-        presence_details = _('Docked at {station}').format(station=station)
-    elif entry['event'] == 'Undocked':
-        presence_state = _('In system {system}').format(system=system)
-        presence_details = _('Flying in normal space')
-    elif entry['event'] == 'ShutDown':
-        presence_state = _('Connecting CMDR Interface')
-        presence_details = ''
-    elif entry['event'] == 'DockingGranted':
-        landingPad = entry['LandingPad']
-    elif entry['event'] == 'Music':
-        if entry['MusicTrack'] == 'MainMenu':
+
+        elif entry['event'] == 'ShutDown':
             presence_state = _('Connecting CMDR Interface')
             presence_details = ''
-    # Todo: This elif might not be executed on undocked. Functionality can be improved
-    elif entry['event'] == 'Undocked' or entry['event'] == 'DockingCancelled' or entry['event'] == 'DockingTimeout':
-        presence_details = _('Flying near {station}').format(station=entry['StationName'])
-    # Planetary events
-    elif entry['event'] == 'ApproachBody':
-        presence_details = _('Approaching {body}').format(body=entry['Body'])
-        planet = entry['Body']
-    elif entry['event'] == 'Touchdown' and entry['PlayerControlled']:
-        presence_details = _('Landed on {body}').format(body=planet)
-    elif entry['event'] == 'Liftoff' and entry['PlayerControlled']:
-        if entry['PlayerControlled']:
-            presence_details = _('Flying around {body}').format(body=planet)
-        else:
-            presence_details = _('In SRV on {body}, ship in orbit').format(body=planet)
-    elif entry['event'] == 'LeaveBody':
-        presence_details = _('Supercruising')
 
-    # EXTERNAL VEHICLE EVENTS
-    elif entry['event'] == 'LaunchSRV':
-        presence_details = _('In SRV on {body}').format(body=planet)
-    elif entry['event'] == 'DockSRV':
-        presence_details = _('Landed on {body}').format(body=planet)
+        elif entry['event'] == 'DockingGranted':
+            landingPad = entry['LandingPad']
 
-    if presence_state != this.presence_state or presence_details != this.presence_details:
-        this.presence_state = presence_state
-        this.presence_details = presence_details
-        update_presence()
+        elif entry['event'] == 'Music' and entry.get('MusicTrack') == 'MainMenu':
+            presence_state = _('Connecting CMDR Interface')
+            presence_details = ''
 
+        elif entry['event'] == 'ApproachBody':
+            planet = entry['Body']
+            presence_details = _('Approaching {body}').format(body=planet)
 
-def check_run(plugin_dir):
-    plugin_path = join(dirname(plugin_dir), plugin_name)
-    retry = True
-    while retry:
-        time.sleep(1 / 10)
+        elif entry['event'] == 'Touchdown' and entry['PlayerControlled']:
+            presence_details = _('Landed on {body}').format(body=planet)
+
+        elif entry['event'] == 'Liftoff':
+            if entry['PlayerControlled']:
+                presence_details = _('Flying around {body}').format(body=planet)
+            else:
+                presence_details = _('In SRV on {body}, ship in orbit').format(body=planet)
+
+        elif entry['event'] == 'LeaveBody':
+            presence_details = _('Supercruising')
+
+        elif entry['event'] == 'LaunchSRV':
+            presence_details = _('In SRV on {body}').format(body=planet)
+
+        elif entry['event'] == 'DockSRV':
+            presence_details = _('Landed on {body}').format(body=planet)
+
+        # Odyssey Events
+        elif entry['event'] == 'Disembark':
+            if entry.get('OnPlanet'):
+                body_name = entry.get('Body', planet)
+                presence_details = _('On foot at {location}').format(location=body_name)
+                planet = body_name
+            elif entry.get('OnStation'):
+                presence_details = _('On foot at {station}').format(station=station)
+
+        elif entry['event'] == 'Embark':
+            if entry.get('Taxi'):
+                presence_details = _('Traveling via Apex Taxi')
+            elif entry.get('OnPlanet'):
+                presence_details = _('Boarding ship at {location}').format(location=planet)
+
+        elif entry['event'] == 'FactionKillBond':
+            presence_details = _('Ground combat in {system}').format(system=system)
+
+        elif entry['event'] == 'ApproachConflictZone':
+            presence_details = _('Approaching conflict zone')
+
+        elif entry['event'] == 'ConflictZone':
+            presence_details = _('Combat ({side})').format(side=entry.get('Side', ''))
+
+        elif entry['event'] == 'ApproachSettlement':
+            presence_details = _('Approaching {settlement}').format(settlement=entry['Name'])
+
+        elif entry['event'] == 'SettlementApproached':
+            presence_details = _('At {settlement}').format(settlement=entry['Name'])
+
+        if presence_state != this.presence_state or presence_details != this.presence_details:
+            this.presence_state = presence_state
+            this.presence_details = presence_details
+            update_presence()
+
+    except Exception as e:
+        logger.error(f"Error handling journal entry: {e}", exc_info=True)
+
+def initialize_discord():
+    """Initialize Discord connection with retry logic"""
+    retry_count = 0
+    max_retries = 5
+    while not hasattr(this, 'app') and retry_count < max_retries:
         try:
-            this.app = dsdk.Discord(CLIENT_ID, dsdk.CreateFlags.no_require_discord, plugin_path)
-            retry = False
-        except Exception:
-            pass
+            this.app = dsdk.Discord(CLIENT_ID, dsdk.CreateFlags.no_require_discord, join(dirname(this.plugin_dir), plugin_name))
+            this.activity_manager = this.app.get_activity_manager()
+            this.activity = dsdk.Activity()
+            this.call_back_thread = threading.Thread(target=run_callbacks, daemon=True)
+            this.call_back_thread.start()
+            reset_presence()
+            break
+        except Exception as e:
+            logger.error(f"Discord init failed (attempt {retry_count+1}/{max_retries}): {e}")
+            time.sleep(2 ** retry_count)
+            retry_count += 1
 
-    this.activity_manager = this.app.get_activity_manager()
-    this.activity = dsdk.Activity()
-
-    this.call_back_thread = threading.Thread(target=run_callbacks)
-    this.call_back_thread.setDaemon(True)
-    this.call_back_thread.start()
+def reset_presence():
+    """Reset presence to default state"""
     this.presence_state = _('Connecting CMDR Interface')
     this.presence_details = ''
     this.time_start = time.time()
-
-    this.disablePresence = None
-
     update_presence()
 
+def run_callbacks():
+    """Handle Discord callbacks"""
+    while True:
+        try:
+            time.sleep(0.1)
+            this.app.run_callbacks()
+        except Exception as e:
+            logger.error(f"Discord callback failed: {e}")
+            time.sleep(1)
+            initialize_discord()
+            break
 
+# CQC handling (remains from original)
 def journal_entry_cqc(cmdr, is_beta, entry, state):
-
     maps = {
         'Bleae Aewsy GA-Y d1-14': 'Asteria Point',
         'Eta Cephei': 'Cluster Compound',
         'Theta Ursae Majoris': 'Elevate',
         'Boepp SU-E d12-818': 'Ice Field',
-            }  # dict to convert star systems to CQC maps names
+    }
 
     presence_state = this.presence_state
     presence_details = this.presence_details
 
-    if state['Horizons']:
-        game_version = 'in Horizons'
+    try:
+        if entry['event'] in ['LoadGame', 'StartUp'] or entry.get('MusicTrack') == 'CQCMenu':
+            game_version = 'in Horizons' if state['Horizons'] else 'in Odyssey' if state['Odyssey'] else ''
+            presence_state = f'Playing CQC {game_version}'
+            presence_details = 'In lobby/queue'
 
-    elif state['Odyssey']:
-        game_version = 'in Odyssey'
-
-    elif not state['Horizons'] and not state['Odyssey']:
-        game_version = 'in Arena standalone'  # or in pre horizons elite but who play it now
-
-    else:
-        game_version = ''  # shouldn't happen
-
-    if entry['event'] == ['LoadGame', 'StartUp'] or entry.get('MusicTrack') == 'CQCMenu':
-        presence_state = f'Playing CQC {game_version}'
-        presence_details = 'In lobby/queue'
-
-    if entry['event'] == 'Music' and entry.get('MusicTrack') == 'MainMenu' or entry['event'].lower() == 'shutdown':
-        presence_state = _('Connecting CMDR Interface')
-        presence_details = ''
-
-    if entry['event'] == 'Location' and entry.get('StarSystem'):
-        presence_details = maps.get(entry['StarSystem'], '')
-        presence_state = f'Playing CQC {game_version}'
-
-    if entry['event'] == 'StartUp':
-        if entry.get('StarSystem') is None:
-            presence_state = _('Connecting CMDR Interface')
-            presence_details = ''
-
-        else:
+        elif entry['event'] == 'Location' and entry.get('StarSystem'):
             presence_details = maps.get(entry['StarSystem'], '')
             presence_state = f'Playing CQC {game_version}'
 
-    if presence_state != this.presence_state or presence_details != this.presence_details:
-        this.presence_state = presence_state
-        this.presence_details = presence_details
-        update_presence()
-
+        if presence_state != this.presence_state or presence_details != this.presence_details:
+            this.presence_state = presence_state
+            this.presence_details = presence_details
+            update_presence()
 
 def run_callbacks():
     try:
